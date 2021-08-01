@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Interviewer</title>
+        <script src="https://pagecdn.io/lib/ace/1.4.12/ace.min.js" crossorigin="anonymous" integrity="sha256-T5QdmsCQO5z8tBAXMrCZ4f3RX8wVdiA0Fu17FGnU1vU=" ></script>
+        <script src="https://pagecdn.io/lib/ace/1.4.12/mode-plain_text.js" crossorigin="anonymous"  ></script>
+        <script src="https://pagecdn.io/lib/ace/1.4.12/keybinding-vim.js" crossorigin="anonymous"  ></script>
+        <link rel="stylesheet" href="css/main.css"> 
+    </head>
+    <body>
+        <div id="header">
+            <h3 id="session_id"></h3>
+            Your username is <b id="username"></b>
+        </div>
+
+        <b id="loading">Loading...</b>
+        <div id="editor"></div>
+
+        <input type="checkbox" id="vim-mode" name="vim-mode" value=0>
+        <label for="vim-mode"> VIM mode</label><br>
+
+        <script src="js/random.js" crossorigin="anonymous"  ></script>
+        <script src="js/ws.js" crossorigin="anonymous"  ></script>
+    </body>
+</html>

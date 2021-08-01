@@ -1,0 +1,9 @@
+#header {
+    margin: 10px;
+}
+
+#editor {
+    position: relative;
+    width: 100%;
+    height: 800px;
+}
