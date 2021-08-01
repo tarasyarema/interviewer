@@ -1,5 +1,5 @@
-const URL = "ws://127.0.0.1:1337" 
-// const URL = "wss://interviewer-ws.onrender.com"
+// const URL = "ws://127.0.0.1:1337" 
+const URL = "wss://interviewer-ws.onrender.com"
 
 const editor = ace.edit(
     document.getElementById("editor"),

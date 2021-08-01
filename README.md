@@ -44,6 +44,7 @@ sfz -r -L -C static
 
 ## TODO
 
+- [ ] Handle the ws url in a better way, xd
 - [ ] Testing, stress-testing and benchmarking.
 - [ ] Refactor Rust code to methods fo `App` as it's hard to read right now.
 - [ ] Add current user list of the session to FE.
