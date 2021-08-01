@@ -1,15 +1,6 @@
 // const URL = "ws://127.0.0.1:1337" 
 const URL = "wss://interviewer-ws.onrender.com"
 
-// Init the socker
-const socket = new WebSocket(URL);
-
-// TODO: This seems like a really bad idea, but works
-let external_change = false;
-
-// Handles if the editor has been loaded
-let is_loaded = false;
-
 const editor = ace.edit(
     document.getElementById("editor"),
     {
@@ -24,112 +15,132 @@ document.getElementById("vim-mode").addEventListener("change", ({ target: { chec
 // Get the document object so that we can modify the text
 const doc = editor.session.getDocument()
 
-// This should be dynamic
-const session_id = "id";
+// This should be dynamic, as this means there's only one session now
+let session_id = "id";
 // document.getElementById("session_id").innerText = session_id;
 
 const username = random_name();
 document.getElementById("username").innerText = username;
 
-socket.onopen = (_) => {
-    console.log("[open] Connection established");
+const connect = () => {
+    // Init the socker
+    const socket = new WebSocket(URL);
 
-    // Send login message
-    socket.send(JSON.stringify({
-        session: session_id,
-        event: "login",
-        username: username,
-        data: JSON.stringify({ username: username }),
-        ts: new Date().getTime()
-    }));
+    // TODO: This seems like a really bad idea, but works
+    let external_change = false;
 
-    // Send get current value, if any
-    socket.send(JSON.stringify({
-        session: session_id,
-        event: "get_value",
-        username: username,
-        data: JSON.stringify({
-            target: username,
-            text: "",
-        }),
-        ts: new Date().getTime()
-    }));
+    // Handles if the editor has been loaded
+    let is_loaded = false;
 
-    is_loaded = false;
+    socket.onopen = (_) => {
+        console.log("[open] Connection established");
 
-    editor.on("change", (e) => {
-        if (external_change) {
-            external_change = !external_change;
-            return false;
-        }
-
+        // Send login message
         socket.send(JSON.stringify({
             session: session_id,
+            event: "login",
             username: username,
-            event: "change",
-            data: JSON.stringify(e),
+            data: JSON.stringify({ username: username }),
             ts: new Date().getTime()
         }));
-    });
-};
 
-socket.onclose = (event) => {
-    if (event.wasClean) {
-        console.log(`[close] Connection closed cleanly { code: ${event.code}, reason: ${event.reason} }`);
-    } else {
-        console.error('[close] Connection died', event);
-    }
-};
+        // Send get current value, if any
+        socket.send(JSON.stringify({
+            session: session_id,
+            event: "get_value",
+            username: username,
+            data: JSON.stringify({
+                target: username,
+                text: "",
+            }),
+            ts: new Date().getTime()
+        }));
 
-socket.onerror = (error) => console.error(error);
+        is_loaded = false;
 
-// Fun stuff
-socket.onmessage = (e) => {
-    const event_data = JSON.parse(e.data);
-    const { event, data } = event_data;
-
-    console.log(`[${event}]`, data);
-
-    switch (event) {
-        case "change":
-            external_change = true;
-
-            doc.applyDelta(JSON.parse(data));
-            break;
-        case "set_value":
-            external_change = true;
-
-            // Get the current cursor
-            const { row, column } = editor.getCursorPosition();
-
-            // Update the whole doc value
-            doc.setValue(JSON.parse(data).text);
-
-            // Go back to the initial cursor position
-            editor.gotoLine(row, column, true);
-
-            // Finally set the editor as loaded
-            if (!is_loaded) {
-                document.getElementById("loading").innerText = "";
-                is_loaded = !is_loaded;
+        editor.on("change", (e) => {
+            if (external_change) {
+                external_change = !external_change;
+                return false;
             }
 
-            break;
-        case "send_value":
-            const value = JSON.stringify({
+            socket.send(JSON.stringify({
                 session: session_id,
                 username: username,
-                event: "set_value",
-                data: JSON.stringify({
-                    target: event_data.username,
-                    text: doc.getValue(),
-                }),
+                event: "change",
+                data: JSON.stringify(e),
                 ts: new Date().getTime()
-            })
+            }));
+        });
+    };
 
-            socket.send(value);
-            console.log(`[${event}] sent ${value.length} bytes to ${event_data.username}`, value);
+    socket.onclose = (event) => {
+        if (event.wasClean) {
+            console.log(`[close] Connection closed cleanly { code: ${event.code}, reason: ${event.reason} }`);
+        } else {
+            console.error('[close] Connection died, reconnecting...', event);
 
-            break;
+            setTimeout(function() {
+                connect();
+            }, 1000);
+        }
+    };
+
+    socket.onerror = (error) => {
+        console.error(error);
+        socket.close();
     }
-};
+
+    // Fun stuff
+    socket.onmessage = (e) => {
+        const event_data = JSON.parse(e.data);
+        const { event, data } = event_data;
+
+        console.log(`[${event}]`, data);
+
+        switch (event) {
+            case "change":
+                external_change = true;
+
+                doc.applyDelta(JSON.parse(data));
+                break;
+            case "set_value":
+                external_change = true;
+
+                // Get the current cursor
+                const { row, column } = editor.getCursorPosition();
+
+                // Update the whole doc value
+                doc.setValue(JSON.parse(data).text);
+
+                // Go back to the initial cursor position
+                editor.gotoLine(row, column, true);
+
+                // Finally set the editor as loaded
+                if (!is_loaded) {
+                    document.getElementById("loading").innerText = "";
+                    is_loaded = !is_loaded;
+                }
+
+                break;
+            case "send_value":
+                const value = JSON.stringify({
+                    session: session_id,
+                    username: username,
+                    event: "set_value",
+                    data: JSON.stringify({
+                        target: event_data.username,
+                        text: doc.getValue(),
+                    }),
+                    ts: new Date().getTime()
+                })
+
+                socket.send(value);
+                console.log(`[${event}] sent ${value.length} bytes to ${event_data.username}`, value);
+
+                break;
+        }
+    };
+}
+
+connect();
