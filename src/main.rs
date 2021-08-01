@@ -2,6 +2,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::{
     collections::hash_map::Entry,
     collections::HashMap,
+    env,
     net::{TcpListener, TcpStream},
     sync::{Arc, Mutex},
     thread::spawn,
@@ -314,9 +315,10 @@ impl App {
 }
 
 fn main() {
-    let server_addr = "127.0.0.1:1337";
+    let port = env::var("PORT").unwrap_or("1337".to_string());
+    let server_addr = format!("127.0.0.1:{}", port);
 
-    let server = TcpListener::bind(server_addr).unwrap();
+    let server = TcpListener::bind(&server_addr).unwrap();
     println!("Server listening on ws://{}", server_addr);
 
     let app = App::new();
