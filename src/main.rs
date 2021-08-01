@@ -350,11 +350,6 @@ fn main() {
 
         spawn(move || match stream {
             Ok(stream) => {
-                println!(
-                    "info: incoming connection by {}",
-                    stream.peer_addr().unwrap()
-                );
-
                 if let Err(err) = moved_app.handle_client(&stream) {
                     match err {
                         Error::Protocol(e) => println!("error: protocol {:?}", e),
