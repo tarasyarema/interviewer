@@ -1,0 +1,73 @@
+<head>
+    <script src="https://pagecdn.io/lib/ace/1.4.12/ace.min.js" crossorigin="anonymous" integrity="sha256-T5QdmsCQO5z8tBAXMrCZ4f3RX8wVdiA0Fu17FGnU1vU=" ></script>
+    <script src="https://pagecdn.io/lib/ace/1.4.12/mode-plain_text.js" crossorigin="anonymous"  ></script>
+
+    <script src="https://pagecdn.io/lib/ace/1.4.12/keybinding-vim.js" crossorigin="anonymous"  ></script>
+
+    <style>
+#editor {
+    position: relative;
+    width: 100%;
+    height: 90%;
+}
+    </style>
+</head>
+<body>
+    <h3>
+        Some title
+    </h3>
+
+    <div id="content">
+        <pre id="editor">some text</pre>
+    </div>
+
+    <input type="checkbox" id="vim-mode" name="vim-mode" value=0>
+    <label for="vim-mode"> VIM mode</label><br>
+
+    <script>
+        // Init the socker
+        const socket = new WebSocket("ws://127.0.0.1:1337");
+
+        // TODO: This seems like a really bad idea, but works
+        let external_change = false;
+
+        const editor = ace.edit("editor", {
+            mode: "ace/mode/plain_text",
+            selectionStyle: "text",
+        });
+
+        // Set event handler for vim keyboard mapping
+        document.getElementById("vim-mode").addEventListener("change", ({ target: { checked } }) => editor.setKeyboardHandler(checked ? `ace/keyboard/vim` : ''));
+
+        // Get the document object so that we can modify the text
+        const doc = editor.session.getDocument()
+
+        socket.onopen = (e) => {
+            console.log("[open] Connection established");
+            editor.on("change", (e) => {
+                if (external_change) {
+                    external_change = !external_change;
+                    return false;
+                }
+
+                socket.send(JSON.stringify(e));
+            });
+        };
+
+        socket.onclose = (event) => {
+            if (event.wasClean) {
+                console.log(`[close] Connection closed cleanly { code: ${event.code}, reason: ${event.reason} }`);
+            } else {
+                console.error('[close] Connection died', event);
+            }
+        };
+
+        socket.onerror = (error) => console.error(error);
+
+        // Fun stuff
+        socket.onmessage = ({ data }) => {
+            external_change = true;
+            doc.applyDelta(JSON.parse(data));
+        };
+    </script>
+</body>
