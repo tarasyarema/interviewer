@@ -326,11 +326,13 @@ impl App {
 
 fn main() {
     let port = env::var("PORT").unwrap_or("1337".to_string());
-    let server_addr = format!("127.0.0.1:{}", port);
+    let server_addr = format!("0.0.0.0:{}", port);
 
     let server = TcpListener::bind(&server_addr).unwrap();
-    println!("info: server listening on {}", server_addr);
-
+    println!(
+        "info: server listening on port {}",
+        server.local_addr().unwrap().port()
+    );
     let app = App::new();
 
     for stream in server.incoming() {
@@ -346,9 +348,7 @@ fn main() {
                 if let Err(err) = moved_app.handle_client(&stream) {
                     match err {
                         Error::Protocol(e) => println!("error: protocol {:?}", e),
-                        Error::ConnectionClosed | Error::Utf8 => {
-                            println!("error: connection closed or utf-8")
-                        }
+                        Error::ConnectionClosed | Error::Utf8 => {}
                         e => println!("error: could not move client {:?}", e),
                     }
                 }
