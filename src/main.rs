@@ -330,12 +330,15 @@ fn main() {
             Ok(stream) => {
                 if let Err(err) = moved_app.handle_client(&stream) {
                     match err {
-                        Error::ConnectionClosed | Error::Protocol(_) | Error::Utf8 => (),
-                        e => error!("test: {}", e),
+                        Error::Protocol(e) => println!("error: protocol {:?}", e),
+                        Error::ConnectionClosed | Error::Utf8 => {
+                            println!("error: connection closed or utf-8")
+                        }
+                        e => println!("error: could not move client {:?}", e),
                     }
                 }
             }
-            Err(e) => error!("Error accepting stream: {}", e),
+            Err(e) => println!("error: could not accept stream {:?}", e),
         });
     }
 }
