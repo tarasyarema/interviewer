@@ -150,10 +150,6 @@ impl App {
                                                 None,
                                             );
 
-                                            if !other.can_write() {
-                                                continue;
-                                            }
-
                                             other.write_message(Message::Text(
                                                 serde_json::to_string(&Event {
                                                     session: data.session,
@@ -178,6 +174,8 @@ impl App {
                                 }
                                 "login" => {
                                     let session_id = data.session.to_string();
+                                    let username = data.username.to_string();
+
                                     let e: UserEvent = serde_json::from_str(&data.data).unwrap();
                                     println!(
                                         "{}: moving {} to session {}",
@@ -211,6 +209,8 @@ impl App {
                                         .retain(|other| other.stream.peer_addr().unwrap() != addr);
 
                                     if !is_first {
+                                        let mut petition_sent = false;
+
                                         // In this scenario we want to send a `get_value` request to the
                                         // other clients in the session
                                         for other_stream in db.get(&session_id).unwrap() {
@@ -225,35 +225,69 @@ impl App {
                                                 None,
                                             );
 
-                                            if !other.can_write() {
-                                                continue;
+                                            if !petition_sent {
+                                                // This is a petition event to an other client
+                                                // so that it sends back the
+                                                let response = serde_json::to_string(&Event {
+                                                    session: session_id.to_string(),
+                                                    username: username.to_string(),
+                                                    event: "send_value".to_string(),
+                                                    data: "".to_string(),
+                                                    ts: SystemTime::now()
+                                                        .duration_since(UNIX_EPOCH)
+                                                        .unwrap()
+                                                        .as_millis(),
+                                                })
+                                                .unwrap();
+
+                                                println!(
+                                                    "{}: sending value petition of {} bytes to {}",
+                                                    addr,
+                                                    response.len(),
+                                                    other_stream.username
+                                                );
+
+                                                other.write_message(Message::Text(response))?;
+
+                                                // If everything went ok we exit
+                                                petition_sent = true;
                                             }
 
-                                            // This is a petition event to an other client
-                                            // so that it sends back the
-                                            let response = serde_json::to_string(&Event {
-                                                session: data.session,
-                                                username: data.username,
-                                                event: "send_value".to_string(),
-                                                data: "".to_string(),
-                                                ts: SystemTime::now()
-                                                    .duration_since(UNIX_EPOCH)
-                                                    .unwrap()
-                                                    .as_millis(),
-                                            })
-                                            .unwrap();
+                                            // Send message to other
+                                            other.write_message(Message::Text(
+                                                serde_json::to_string(&Event {
+                                                    session: session_id.to_string(),
+                                                    username: username.to_string(),
+                                                    event: "add_user".to_string(),
+                                                    data: serde_json::to_string(&UserEvent {
+                                                        username: username.to_string(),
+                                                    })
+                                                    .unwrap(),
+                                                    ts: SystemTime::now()
+                                                        .duration_since(UNIX_EPOCH)
+                                                        .unwrap()
+                                                        .as_millis(),
+                                                })
+                                                .unwrap(),
+                                            ))?;
 
-                                            println!(
-                                                "{}: sending value petition of {} bytes to {}",
-                                                addr,
-                                                response.len(),
-                                                other_stream.username
-                                            );
-
-                                            other.write_message(Message::Text(response))?;
-
-                                            // If everything went ok we exit
-                                            break;
+                                            // Send message to self
+                                            socket.write_message(Message::Text(
+                                                serde_json::to_string(&Event {
+                                                    session: session_id.to_string(),
+                                                    username: other_stream.username.to_string(),
+                                                    event: "add_user".to_string(),
+                                                    data: serde_json::to_string(&UserEvent {
+                                                        username: other_stream.username.to_string(),
+                                                    })
+                                                    .unwrap(),
+                                                    ts: SystemTime::now()
+                                                        .duration_since(UNIX_EPOCH)
+                                                        .unwrap()
+                                                        .as_millis(),
+                                                })
+                                                .unwrap(),
+                                            ))?;
                                         }
                                     }
                                 }
@@ -270,10 +304,6 @@ impl App {
                                             Role::Server,
                                             None,
                                         );
-
-                                        if !other.can_write() {
-                                            continue;
-                                        }
 
                                         match other_stream.stream.peer_addr() {
                                             Ok(other_addr) => {
@@ -305,6 +335,48 @@ impl App {
                         // Handle a client closure message
                         Message::Close(_) => {
                             let mut db = self.db.lock().unwrap();
+
+                            let user_to_remove = if let Some(c) = db
+                                .get(&out_session_id.to_string())
+                                .unwrap()
+                                .iter()
+                                .find(|&u| u.stream.peer_addr().unwrap() == addr)
+                            {
+                                c.username.to_string()
+                            } else {
+                                "".to_string()
+                            }
+                            .to_string();
+
+                            // Send user remove to all other clients in the session
+                            for other_stream in db.get(&out_session_id.to_string()).unwrap() {
+                                if other_stream.stream.peer_addr().unwrap() == addr {
+                                    continue;
+                                }
+
+                                let mut other = WebSocket::from_raw_socket(
+                                    other_stream.stream.try_clone().unwrap(),
+                                    Role::Server,
+                                    None,
+                                );
+
+                                let response = serde_json::to_string(&Event {
+                                    session: out_session_id.to_string(),
+                                    username: other_stream.username.to_string(),
+                                    event: "remove_user".to_string(),
+                                    data: serde_json::to_string(&UserEvent {
+                                        username: user_to_remove.to_string(),
+                                    })
+                                    .unwrap(),
+                                    ts: SystemTime::now()
+                                        .duration_since(UNIX_EPOCH)
+                                        .unwrap()
+                                        .as_millis(),
+                                })
+                                .unwrap();
+
+                                other.write_message(Message::Text(response))?;
+                            }
 
                             db.get_mut(&out_session_id.to_string())
                                 .unwrap()

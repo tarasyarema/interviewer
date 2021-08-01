@@ -98,6 +98,29 @@ const connect = () => {
 
                 doc.applyDelta(JSON.parse(data));
                 break;
+            case "add_user":
+                const li = document.createElement("li");
+                li.innerText = JSON.parse(data).username;
+
+                document.getElementById("user_list").appendChild(li);
+                break;
+            case "remove_user":
+                const user_list = document.getElementById("user_list");
+
+                // Copy the list of users so that we do not have strange things
+                const lis = [];
+                for (const li of user_list.getElementsByTagName("li")) lis.push(li);
+
+                const to_remove = JSON.parse(data).username;
+
+                // Remove the whole list
+                document.getElementById("user_list").innerHTML = "";
+
+                for (const user of lis) {
+                    // Only append if the current user is not the one to remove
+                    if (user.innerText !== to_remove) document.getElementById("user_list").appendChild(user)
+                }
+                break;
             case "set_value":
                 external_change = true;
 
