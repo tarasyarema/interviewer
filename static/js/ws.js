@@ -1,5 +1,5 @@
 // const URL = "ws://127.0.0.1:1337" 
-const URL = "ws://interviewer-ws.onrender.com"
+const URL = "wss://interviewer-ws.onrender.com"
 
 // Init the socker
 const socket = new WebSocket(URL);

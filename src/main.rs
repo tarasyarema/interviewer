@@ -10,8 +10,10 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use tungstenite::{
-    accept, handshake::HandshakeRole, protocol::Role, Error, HandshakeError, Message, Result,
-    WebSocket,
+    accept_hdr,
+    handshake::server::{Request, Response},
+    protocol::Role,
+    Error, Message, Result, WebSocket,
 };
 
 #[derive(Debug)]
@@ -61,24 +63,30 @@ struct Event {
     ts: u128,
 }
 
-fn must_not_block<Role: HandshakeRole>(err: HandshakeError<Role>) -> Error {
-    match err {
-        HandshakeError::Interrupted(_) => panic!("Bug: blocking socket would block"),
-        HandshakeError::Failure(f) => f,
-    }
-}
-
-const ID: &str = "id";
+const SESSION_ID: &str = "id";
 
 impl App {
     fn handle_client(&self, stream: &TcpStream) -> Result<()> {
-        let mut socket = accept(stream).map_err(must_not_block)?;
         let addr = stream.peer_addr().unwrap();
+
+        let mut socket = accept_hdr(stream, |req: &Request, mut response: Response| {
+            println!(
+                "info: {} received new WS handskahe with path {}",
+                addr,
+                req.uri().path()
+            );
+
+            let headers = response.headers_mut();
+            headers.append("X_INTERVIEWER_OK", ":3".parse().unwrap());
+
+            Ok(response)
+        })
+        .unwrap();
 
         let is_first = {
             let mut db = self.db.lock().unwrap();
 
-            match db.entry(ID.to_string()) {
+            match db.entry(SESSION_ID.to_string()) {
                 Entry::Vacant(ele) => {
                     ele.insert(vec![Client {
                         username: addr.to_string(),
@@ -93,7 +101,7 @@ impl App {
                 }
             }
 
-            let session_len = db.get(ID).unwrap().len();
+            let session_len = db.get(SESSION_ID).unwrap().len();
 
             println!("{}: inserted into db with len {}", addr, session_len,);
 
@@ -142,7 +150,8 @@ impl App {
                                 socket.write_message(Message::Text(response))?
                             }
                             false => {
-                                for other_stream in self.db.lock().unwrap().get(ID).unwrap() {
+                                for other_stream in self.db.lock().unwrap().get(SESSION_ID).unwrap()
+                                {
                                     let mut other = WebSocket::from_raw_socket(
                                         other_stream.stream.try_clone().unwrap(),
                                         Role::Server,
@@ -203,7 +212,8 @@ impl App {
                                 e.target
                             );
 
-                            for other_stream in self.db.lock().unwrap().get_mut(ID).unwrap() {
+                            for other_stream in self.db.lock().unwrap().get_mut(SESSION_ID).unwrap()
+                            {
                                 if other_stream.username == e.target {
                                     let mut other = WebSocket::from_raw_socket(
                                         other_stream.stream.try_clone().unwrap(),
@@ -241,7 +251,8 @@ impl App {
                             let e: UserEvent = serde_json::from_str(&data.data).unwrap();
                             println!("{}: setting username to be {:?}", addr, e);
 
-                            for other_stream in self.db.lock().unwrap().get_mut(ID).unwrap() {
+                            for other_stream in self.db.lock().unwrap().get_mut(SESSION_ID).unwrap()
+                            {
                                 if other_stream.stream.peer_addr().unwrap() == addr {
                                     other_stream.username = e.username;
                                     break;
@@ -249,7 +260,7 @@ impl App {
                             }
                         }
                         "change" => {
-                            for other_stream in self.db.lock().unwrap().get(ID).unwrap() {
+                            for other_stream in self.db.lock().unwrap().get(SESSION_ID).unwrap() {
                                 let mut other = WebSocket::from_raw_socket(
                                     other_stream.stream.try_clone().unwrap(),
                                     Role::Server,
@@ -290,7 +301,7 @@ impl App {
                 Message::Close(_) => {
                     let mut db = self.db.lock().unwrap();
 
-                    db.get_mut(ID)
+                    db.get_mut(SESSION_ID)
                         .unwrap()
                         .retain(|other| other.stream.peer_addr().unwrap() != addr);
 
@@ -318,7 +329,7 @@ fn main() {
     let server_addr = format!("127.0.0.1:{}", port);
 
     let server = TcpListener::bind(&server_addr).unwrap();
-    println!("Server listening on ws://{}", server_addr);
+    println!("info: server listening on {}", server_addr);
 
     let app = App::new();
 
@@ -327,6 +338,11 @@ fn main() {
 
         spawn(move || match stream {
             Ok(stream) => {
+                println!(
+                    "info: incoming connection by {}",
+                    stream.peer_addr().unwrap()
+                );
+
                 if let Err(err) = moved_app.handle_client(&stream) {
                     match err {
                         Error::Protocol(e) => println!("error: protocol {:?}", e),
