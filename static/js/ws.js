@@ -1,5 +1,5 @@
-// const URL = "ws://127.0.0.1:1337" 
-const URL = "wss://interviewer-ws.onrender.com"
+const URL = "ws://127.0.0.1:1337" 
+// const URL = "wss://interviewer-ws.onrender.com"
 
 const editor = ace.edit(
     document.getElementById("editor"),
@@ -12,12 +12,23 @@ const editor = ace.edit(
 // Set event handler for vim keyboard mapping
 document.getElementById("vim-mode").addEventListener("change", ({ target: { checked } }) => editor.setKeyboardHandler(checked ? `ace/keyboard/vim` : ''));
 
+const urlSearchParams = new URLSearchParams(window.location.search);
+
+const params = Object.fromEntries(urlSearchParams.entries());
+
+let session_id;
+
+if (params.session_id === undefined) {
+    window.location.replace(`/?session_id=${new Date().getTime()}`);    
+} else {
+    session_id = params.session_id;
+}
+
+document.getElementById("session_id").innerHTML = `Session ID: <b>${session_id}</b>`;
+
 // Get the document object so that we can modify the text
 const doc = editor.session.getDocument()
 
-// This should be dynamic, as this means there's only one session now
-let session_id = "id";
-// document.getElementById("session_id").innerText = session_id;
 
 const username = random_name();
 document.getElementById("username").innerText = username;
@@ -28,9 +39,6 @@ const connect = () => {
 
     // TODO: This seems like a really bad idea, but works
     let external_change = false;
-
-    // Handles if the editor has been loaded
-    let is_loaded = false;
 
     socket.onopen = (_) => {
         console.log("[open] Connection established");
@@ -43,20 +51,6 @@ const connect = () => {
             data: JSON.stringify({ username: username }),
             ts: new Date().getTime()
         }));
-
-        // Send get current value, if any
-        socket.send(JSON.stringify({
-            session: session_id,
-            event: "get_value",
-            username: username,
-            data: JSON.stringify({
-                target: username,
-                text: "",
-            }),
-            ts: new Date().getTime()
-        }));
-
-        is_loaded = false;
 
         editor.on("change", (e) => {
             if (external_change) {
@@ -115,12 +109,6 @@ const connect = () => {
 
                 // Go back to the initial cursor position
                 editor.gotoLine(row, column, true);
-
-                // Finally set the editor as loaded
-                if (!is_loaded) {
-                    document.getElementById("loading").innerText = "";
-                    is_loaded = !is_loaded;
-                }
 
                 break;
             case "send_value":

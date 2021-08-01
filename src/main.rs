@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{
     collections::hash_map::Entry,
@@ -7,8 +8,6 @@ use std::{
     sync::{Arc, Mutex},
     thread::spawn,
 };
-
-use serde::{Deserialize, Serialize};
 use tungstenite::{
     accept_hdr,
     handshake::server::{Request, Response},
@@ -69,7 +68,7 @@ impl App {
     fn handle_client(&self, stream: &TcpStream) -> Result<()> {
         let addr = stream.peer_addr().unwrap();
 
-        let mut socket = accept_hdr(stream, |req: &Request, mut response: Response| {
+        match accept_hdr(stream, |req: &Request, mut response: Response| {
             println!(
                 "info: {} received new WS handskahe with path {}",
                 addr,
@@ -80,92 +79,153 @@ impl App {
             headers.append("X_INTERVIEWER_OK", ":3".parse().unwrap());
 
             Ok(response)
-        })
-        .unwrap();
+        }) {
+            Ok(mut socket) => {
+                // Here we will insert the current client into the DB
+                // lobby, as we do not know the session id yet
+                {
+                    let mut db = self.db.lock().unwrap();
 
-        let is_first = {
-            let mut db = self.db.lock().unwrap();
+                    match db.entry(SESSION_ID.to_string()) {
+                        Entry::Vacant(ele) => {
+                            ele.insert(vec![Client {
+                                username: addr.to_string(),
+                                stream: stream.try_clone().unwrap(),
+                            }]);
+                        }
+                        Entry::Occupied(mut ele) => {
+                            ele.get_mut().push(Client {
+                                username: addr.to_string(),
+                                stream: stream.try_clone().unwrap(),
+                            });
+                        }
+                    }
 
-            match db.entry(SESSION_ID.to_string()) {
-                Entry::Vacant(ele) => {
-                    ele.insert(vec![Client {
-                        username: addr.to_string(),
-                        stream: stream.try_clone().unwrap(),
-                    }]);
+                    let session_len = db.get(SESSION_ID).unwrap().len();
+
+                    println!("{}: inserted into lobby with len {}", addr, session_len);
                 }
-                Entry::Occupied(mut ele) => {
-                    ele.get_mut().push(Client {
-                        username: addr.to_string(),
-                        stream: stream.try_clone().unwrap(),
-                    });
-                }
-            }
 
-            let session_len = db.get(SESSION_ID).unwrap().len();
+                let mut out_session_id: String = SESSION_ID.to_string();
 
-            println!("{}: inserted into db with len {}", addr, session_len,);
+                loop {
+                    match socket.read_message()? {
+                        msg @ Message::Text(_) | msg @ Message::Binary(_) => {
+                            let data: Event = serde_json::from_str(&msg.to_string()).unwrap();
+                            out_session_id = data.session.to_string();
 
-            if session_len == 1 {
-                true
-            } else {
-                false
-            }
-        };
+                            println!(
+                                "{}: [{}] sent {} bytes {:?}",
+                                addr,
+                                data.event,
+                                data.event.len(),
+                                data.data
+                            );
 
-        loop {
-            match socket.read_message()? {
-                msg @ Message::Text(_) | msg @ Message::Binary(_) => {
-                    let data: Event = serde_json::from_str(&msg.to_string()).unwrap();
-
-                    println!(
-                        "{}: [{}] sent {} bytes {:?}",
-                        addr,
-                        data.event,
-                        data.event.len(),
-                        data.data
-                    );
-
-                    match data.event.as_ref() {
-                        "get_value" => match is_first {
-                            true => {
-                                let response = serde_json::to_string(&Event {
-                                    session: data.session,
-                                    username: data.username,
-                                    event: "set_value".to_string(),
-                                    // If the current client is the only one in the
-                                    // DB we just send an empty string
-                                    data: serde_json::to_string(&ValueEvent {
-                                        target: addr.to_string(),
-                                        text: "".to_string(),
-                                    })
-                                    .unwrap(),
-                                    ts: SystemTime::now()
-                                        .duration_since(UNIX_EPOCH)
-                                        .unwrap()
-                                        .as_millis(),
-                                })
-                                .unwrap();
-
-                                println!("{}: sent `set_value`", addr);
-                                socket.write_message(Message::Text(response))?
-                            }
-                            false => {
-                                for other_stream in self.db.lock().unwrap().get(SESSION_ID).unwrap()
-                                {
-                                    let mut other = WebSocket::from_raw_socket(
-                                        other_stream.stream.try_clone().unwrap(),
-                                        Role::Server,
-                                        None,
+                            match data.event.as_ref() {
+                                "set_value" => {
+                                    let e: ValueEvent = serde_json::from_str(&data.data).unwrap();
+                                    println!(
+                                        "{}: sending {} bytes of value data to {}",
+                                        addr,
+                                        e.text.len(),
+                                        e.target
                                     );
 
-                                    if !other.can_write() {
-                                        continue;
-                                    }
+                                    for other_stream in self
+                                        .db
+                                        .lock()
+                                        .unwrap()
+                                        .get_mut(&data.session.to_string())
+                                        .unwrap()
+                                    {
+                                        println!(
+                                            "{}: `set_value` target {} for {}",
+                                            addr, e.target, other_stream.username
+                                        );
+                                        if other_stream.username == e.target {
+                                            let mut other = WebSocket::from_raw_socket(
+                                                other_stream.stream.try_clone().unwrap(),
+                                                Role::Server,
+                                                None,
+                                            );
 
-                                    match other_stream.stream.peer_addr() {
-                                        Ok(other_addr) => {
+                                            if !other.can_write() {
+                                                continue;
+                                            }
+
+                                            other.write_message(Message::Text(
+                                                serde_json::to_string(&Event {
+                                                    session: data.session,
+                                                    username: data.username,
+                                                    event: "set_value".to_string(),
+                                                    data: serde_json::to_string(&ValueEvent {
+                                                        target: addr.to_string(),
+                                                        text: e.text,
+                                                    })
+                                                    .unwrap(),
+                                                    ts: SystemTime::now()
+                                                        .duration_since(UNIX_EPOCH)
+                                                        .unwrap()
+                                                        .as_millis(),
+                                                })
+                                                .unwrap(),
+                                            ))?;
+
+                                            break;
+                                        }
+                                    }
+                                }
+                                "login" => {
+                                    let session_id = data.session.to_string();
+                                    let e: UserEvent = serde_json::from_str(&data.data).unwrap();
+                                    println!(
+                                        "{}: moving {} to session {}",
+                                        addr, e.username, session_id
+                                    );
+
+                                    let mut db = self.db.lock().unwrap();
+
+                                    // Add the current client to the session vec and check if
+                                    // it's the first or not
+                                    let is_first = match db.entry(session_id.to_string()) {
+                                        Entry::Vacant(ele) => {
+                                            ele.insert(vec![Client {
+                                                username: e.username.to_string(),
+                                                stream: stream.try_clone().unwrap(),
+                                            }]);
+                                            true
+                                        }
+                                        Entry::Occupied(mut ele) => {
+                                            ele.get_mut().push(Client {
+                                                username: e.username.to_string(),
+                                                stream: stream.try_clone().unwrap(),
+                                            });
+                                            false
+                                        }
+                                    };
+
+                                    // Now we want to remove the current client from the lobby
+                                    db.get_mut(SESSION_ID)
+                                        .unwrap()
+                                        .retain(|other| other.stream.peer_addr().unwrap() != addr);
+
+                                    if !is_first {
+                                        // In this scenario we want to send a `get_value` request to the
+                                        // other clients in the session
+                                        for other_stream in db.get(&session_id).unwrap() {
                                             // Skip the same client address
-                                            if other_addr == addr {
+                                            if other_stream.username == e.username.to_string() {
+                                                continue;
+                                            }
+
+                                            let mut other = WebSocket::from_raw_socket(
+                                                other_stream.stream.try_clone().unwrap(),
+                                                Role::Server,
+                                                None,
+                                            );
+
+                                            if !other.can_write() {
                                                 continue;
                                             }
 
@@ -187,129 +247,79 @@ impl App {
                                                 "{}: sending value petition of {} bytes to {}",
                                                 addr,
                                                 response.len(),
-                                                other_addr
+                                                other_stream.username
                                             );
 
                                             other.write_message(Message::Text(response))?;
+
+                                            // If everything went ok we exit
+                                            break;
                                         }
-                                        Err(e) => {
-                                            println!("{:?}", e);
+                                    }
+                                }
+                                "change" => {
+                                    for other_stream in self
+                                        .db
+                                        .lock()
+                                        .unwrap()
+                                        .get(&data.session.to_string())
+                                        .unwrap()
+                                    {
+                                        let mut other = WebSocket::from_raw_socket(
+                                            other_stream.stream.try_clone().unwrap(),
+                                            Role::Server,
+                                            None,
+                                        );
+
+                                        if !other.can_write() {
                                             continue;
                                         }
-                                    }
 
-                                    // If everything went ok we exit
-                                    break;
-                                }
-                            }
-                        },
-                        "set_value" => {
-                            let e: ValueEvent = serde_json::from_str(&data.data).unwrap();
-                            println!(
-                                "{}: sending {} bytes of value data to {}",
-                                addr,
-                                e.text.len(),
-                                e.target
-                            );
+                                        match other_stream.stream.peer_addr() {
+                                            Ok(other_addr) => {
+                                                if other_addr != addr {
+                                                    // Now broadcast the received event to all other
+                                                    // editors of the current document
+                                                    let response =
+                                                        serde_json::to_string(&data).unwrap();
 
-                            for other_stream in self.db.lock().unwrap().get_mut(SESSION_ID).unwrap()
-                            {
-                                if other_stream.username == e.target {
-                                    let mut other = WebSocket::from_raw_socket(
-                                        other_stream.stream.try_clone().unwrap(),
-                                        Role::Server,
-                                        None,
-                                    );
-
-                                    if !other.can_write() {
-                                        continue;
-                                    }
-
-                                    other.write_message(Message::Text(
-                                        serde_json::to_string(&Event {
-                                            session: data.session,
-                                            username: data.username,
-                                            event: "set_value".to_string(),
-                                            data: serde_json::to_string(&ValueEvent {
-                                                target: addr.to_string(),
-                                                text: e.text,
-                                            })
-                                            .unwrap(),
-                                            ts: SystemTime::now()
-                                                .duration_since(UNIX_EPOCH)
-                                                .unwrap()
-                                                .as_millis(),
-                                        })
-                                        .unwrap(),
-                                    ))?;
-
-                                    break;
-                                }
-                            }
-                        }
-                        "login" => {
-                            let e: UserEvent = serde_json::from_str(&data.data).unwrap();
-                            println!("{}: setting username to be {:?}", addr, e);
-
-                            for other_stream in self.db.lock().unwrap().get_mut(SESSION_ID).unwrap()
-                            {
-                                if other_stream.stream.peer_addr().unwrap() == addr {
-                                    other_stream.username = e.username;
-                                    break;
-                                }
-                            }
-                        }
-                        "change" => {
-                            for other_stream in self.db.lock().unwrap().get(SESSION_ID).unwrap() {
-                                let mut other = WebSocket::from_raw_socket(
-                                    other_stream.stream.try_clone().unwrap(),
-                                    Role::Server,
-                                    None,
-                                );
-
-                                if !other.can_write() {
-                                    continue;
-                                }
-
-                                match other_stream.stream.peer_addr() {
-                                    Ok(other_addr) => {
-                                        if other_addr != addr {
-                                            // Now broadcast the received event to all other
-                                            // editors of the current document
-                                            let response = serde_json::to_string(&data).unwrap();
-
-                                            println!(
-                                                "{}: sending {} bytes to {}",
-                                                addr,
-                                                response.len(),
-                                                other_addr
-                                            );
-                                            other.write_message(Message::Text(response))?;
+                                                    println!(
+                                                        "{}: sending {} bytes to {}",
+                                                        addr,
+                                                        response.len(),
+                                                        other_addr
+                                                    );
+                                                    other.write_message(Message::Text(response))?;
+                                                }
+                                            }
+                                            Err(e) => {
+                                                println!("{:?}", e)
+                                            }
                                         }
                                     }
-                                    Err(e) => {
-                                        println!("{:?}", e)
-                                    }
                                 }
+                                _ => (),
                             }
                         }
-                        _ => (),
+
+                        // Handle a client closure message
+                        Message::Close(_) => {
+                            let mut db = self.db.lock().unwrap();
+
+                            db.get_mut(&out_session_id.to_string())
+                                .unwrap()
+                                .retain(|other| other.stream.peer_addr().unwrap() != addr);
+
+                            println!("{}: Removed from DB", addr)
+                        }
+                        // Skip all non text nor binary messages
+                        Message::Ping(_) | Message::Pong(_) => {}
                     }
                 }
-
-                // Handle a client closure message
-                Message::Close(_) => {
-                    let mut db = self.db.lock().unwrap();
-
-                    db.get_mut(SESSION_ID)
-                        .unwrap()
-                        .retain(|other| other.stream.peer_addr().unwrap() != addr);
-
-                    println!("{}: Removed from DB", addr)
-                }
-                // Skip all non text nor binary messages
-                Message::Ping(_) | Message::Pong(_) => {}
             }
+            // In this scenario we know that it's not a correct
+            // ws connection, hence just avoid it
+            Err(_) => (Ok(())),
         }
     }
 
