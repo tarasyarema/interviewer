@@ -8,7 +8,6 @@ use std::{
     thread::spawn,
 };
 
-use log::*;
 use serde::{Deserialize, Serialize};
 use tungstenite::{
     accept, handshake::HandshakeRole, protocol::Role, Error, HandshakeError, Message, Result,
