@@ -16,10 +16,16 @@
         <b id="loading">Loading...</b>
         <div id="editor"></div>
 
-        <input type="checkbox" id="vim-mode" name="vim-mode" value=0>
-        <label for="vim-mode"> VIM mode</label><br>
+        <div id="footer">
+            <input type="checkbox" id="vim-mode" name="vim-mode" value=0>
+            <label for="vim-mode"> VIM mode</label>
+            <br><br>
+            <button for="save" onclick="save_contents()">Save to file</button>
+            <button for="clip" onclick="copy_contents()">Copy contents to clipboard</button><br>
+        </div>
 
         <script src="js/random.js" crossorigin="anonymous"  ></script>
         <script src="js/ws.js" crossorigin="anonymous"  ></script>
+        <script src="js/actions.js" crossorigin="anonymous"  ></script>
     </body>
 </html>
