@@ -1,30 +1,44 @@
 use serde::{Deserialize, Serialize};
+use std::clone::Clone;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{
     collections::hash_map::Entry,
     collections::HashMap,
     env,
-    net::{TcpListener, TcpStream},
+    io::Error as IoError,
+    net::SocketAddr,
     sync::{Arc, Mutex},
-    thread::spawn,
-};
-use tungstenite::{
-    accept_hdr,
-    handshake::server::{Request, Response},
-    protocol::Role,
-    Error, Message, Result, WebSocket,
 };
 
-#[derive(Debug)]
-struct Client {
+use futures_channel::mpsc::{unbounded, UnboundedSender};
+use futures_util::{future, pin_mut, stream::TryStreamExt, StreamExt};
+
+use tokio::net::{TcpListener, TcpStream};
+use tokio_tungstenite::{accept_async, tungstenite::Error};
+use tungstenite::protocol::Message;
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct User {
     username: String,
-    stream: TcpStream,
+    socket: SocketAddr,
 }
 
-type Db = Arc<Mutex<HashMap<String, Vec<Client>>>>;
+type Tx = UnboundedSender<Message>;
+type PeerMap = Arc<Mutex<HashMap<SocketAddr, Tx>>>;
+type Db = Arc<Mutex<HashMap<String, Vec<User>>>>;
 
-struct App {
-    db: Db,
+#[derive(Serialize, Deserialize, Debug)]
+struct Event {
+    username: String,
+    event: String,
+    data: String,
+    ts: u128,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct LoginCommand {
+    username: String,
+    session_id: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -34,7 +48,7 @@ struct Range {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct EditorEvent {
+struct ChangeCommand {
     id: Option<u64>,
     action: String,
     start: Range,
@@ -43,394 +57,484 @@ struct EditorEvent {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct UserEvent {
-    username: String,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct ValueEvent {
+struct ValueCommand {
     target: String,
     text: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct Event {
-    session: String,
-    username: String,
-    event: String,
-    data: String,
-    ts: u128,
+enum Command {
+    Login { data: LoginCommand },
+    Change { data: ChangeCommand },
+    SetValue { data: String },
 }
 
-const SESSION_ID: &str = "id";
+struct App {
+    db: Db,
+    peers: PeerMap,
+    session: Mutex<String>,
+    username: Mutex<String>,
+}
 
 impl App {
-    fn handle_client(&self, stream: &TcpStream) -> Result<()> {
-        let addr = stream.peer_addr().unwrap();
-
-        match accept_hdr(stream, |req: &Request, mut response: Response| {
-            println!(
-                "info: {} received new WS handskahe with path {}",
-                addr,
-                req.uri().path()
-            );
-
-            let headers = response.headers_mut();
-            headers.append("X_INTERVIEWER_OK", ":3".parse().unwrap());
-
-            Ok(response)
-        }) {
-            Ok(mut socket) => {
-                // Here we will insert the current client into the DB
-                // lobby, as we do not know the session id yet
-                {
-                    let mut db = self.db.lock().unwrap();
-
-                    match db.entry(SESSION_ID.to_string()) {
-                        Entry::Vacant(ele) => {
-                            ele.insert(vec![Client {
-                                username: addr.to_string(),
-                                stream: stream.try_clone().unwrap(),
-                            }]);
-                        }
-                        Entry::Occupied(mut ele) => {
-                            ele.get_mut().push(Client {
-                                username: addr.to_string(),
-                                stream: stream.try_clone().unwrap(),
-                            });
-                        }
-                    }
-
-                    let session_len = db.get(SESSION_ID).unwrap().len();
-
-                    println!("{}: inserted into lobby with len {}", addr, session_len);
-                }
-
-                let mut out_session_id: String = SESSION_ID.to_string();
-
-                loop {
-                    match socket.read_message()? {
-                        msg @ Message::Text(_) | msg @ Message::Binary(_) => {
-                            let data: Event = serde_json::from_str(&msg.to_string()).unwrap();
-                            out_session_id = data.session.to_string();
-
-                            println!(
-                                "{}: [{}] sent {} bytes {:?}",
-                                addr,
-                                data.event,
-                                data.event.len(),
-                                data.data
-                            );
-
-                            match data.event.as_ref() {
-                                "set_value" => {
-                                    let e: ValueEvent = serde_json::from_str(&data.data).unwrap();
-                                    println!(
-                                        "{}: sending {} bytes of value data to {}",
-                                        addr,
-                                        e.text.len(),
-                                        e.target
-                                    );
-
-                                    for other_stream in self
-                                        .db
-                                        .lock()
-                                        .unwrap()
-                                        .get_mut(&data.session.to_string())
-                                        .unwrap()
-                                    {
-                                        println!(
-                                            "{}: `set_value` target {} for {}",
-                                            addr, e.target, other_stream.username
-                                        );
-                                        if other_stream.username == e.target {
-                                            let mut other = WebSocket::from_raw_socket(
-                                                other_stream.stream.try_clone().unwrap(),
-                                                Role::Server,
-                                                None,
-                                            );
-
-                                            other.write_message(Message::Text(
-                                                serde_json::to_string(&Event {
-                                                    session: data.session,
-                                                    username: data.username,
-                                                    event: "set_value".to_string(),
-                                                    data: serde_json::to_string(&ValueEvent {
-                                                        target: addr.to_string(),
-                                                        text: e.text,
-                                                    })
-                                                    .unwrap(),
-                                                    ts: SystemTime::now()
-                                                        .duration_since(UNIX_EPOCH)
-                                                        .unwrap()
-                                                        .as_millis(),
-                                                })
-                                                .unwrap(),
-                                            ))?;
-
-                                            break;
-                                        }
-                                    }
-                                }
-                                "login" => {
-                                    let session_id = data.session.to_string();
-                                    let username = data.username.to_string();
-
-                                    let e: UserEvent = serde_json::from_str(&data.data).unwrap();
-                                    println!(
-                                        "{}: moving {} to session {}",
-                                        addr, e.username, session_id
-                                    );
-
-                                    let mut db = self.db.lock().unwrap();
-
-                                    // Add the current client to the session vec and check if
-                                    // it's the first or not
-                                    let is_first = match db.entry(session_id.to_string()) {
-                                        Entry::Vacant(ele) => {
-                                            ele.insert(vec![Client {
-                                                username: e.username.to_string(),
-                                                stream: stream.try_clone().unwrap(),
-                                            }]);
-                                            true
-                                        }
-                                        Entry::Occupied(mut ele) => {
-                                            ele.get_mut().push(Client {
-                                                username: e.username.to_string(),
-                                                stream: stream.try_clone().unwrap(),
-                                            });
-                                            false
-                                        }
-                                    };
-
-                                    // Now we want to remove the current client from the lobby
-                                    db.get_mut(SESSION_ID)
-                                        .unwrap()
-                                        .retain(|other| other.stream.peer_addr().unwrap() != addr);
-
-                                    if !is_first {
-                                        let mut petition_sent = false;
-
-                                        // In this scenario we want to send a `get_value` request to the
-                                        // other clients in the session
-                                        for other_stream in db.get(&session_id).unwrap() {
-                                            // Skip the same client address
-                                            if other_stream.username == e.username.to_string() {
-                                                continue;
-                                            }
-
-                                            let mut other = WebSocket::from_raw_socket(
-                                                other_stream.stream.try_clone().unwrap(),
-                                                Role::Server,
-                                                None,
-                                            );
-
-                                            if !petition_sent {
-                                                // This is a petition event to an other client
-                                                // so that it sends back the
-                                                let response = serde_json::to_string(&Event {
-                                                    session: session_id.to_string(),
-                                                    username: username.to_string(),
-                                                    event: "send_value".to_string(),
-                                                    data: "".to_string(),
-                                                    ts: SystemTime::now()
-                                                        .duration_since(UNIX_EPOCH)
-                                                        .unwrap()
-                                                        .as_millis(),
-                                                })
-                                                .unwrap();
-
-                                                println!(
-                                                    "{}: sending value petition of {} bytes to {}",
-                                                    addr,
-                                                    response.len(),
-                                                    other_stream.username
-                                                );
-
-                                                other.write_message(Message::Text(response))?;
-
-                                                // If everything went ok we exit
-                                                petition_sent = true;
-                                            }
-
-                                            // Send message to other
-                                            other.write_message(Message::Text(
-                                                serde_json::to_string(&Event {
-                                                    session: session_id.to_string(),
-                                                    username: username.to_string(),
-                                                    event: "add_user".to_string(),
-                                                    data: serde_json::to_string(&UserEvent {
-                                                        username: username.to_string(),
-                                                    })
-                                                    .unwrap(),
-                                                    ts: SystemTime::now()
-                                                        .duration_since(UNIX_EPOCH)
-                                                        .unwrap()
-                                                        .as_millis(),
-                                                })
-                                                .unwrap(),
-                                            ))?;
-
-                                            // Send message to self
-                                            socket.write_message(Message::Text(
-                                                serde_json::to_string(&Event {
-                                                    session: session_id.to_string(),
-                                                    username: other_stream.username.to_string(),
-                                                    event: "add_user".to_string(),
-                                                    data: serde_json::to_string(&UserEvent {
-                                                        username: other_stream.username.to_string(),
-                                                    })
-                                                    .unwrap(),
-                                                    ts: SystemTime::now()
-                                                        .duration_since(UNIX_EPOCH)
-                                                        .unwrap()
-                                                        .as_millis(),
-                                                })
-                                                .unwrap(),
-                                            ))?;
-                                        }
-                                    }
-                                }
-                                "change" => {
-                                    for other_stream in self
-                                        .db
-                                        .lock()
-                                        .unwrap()
-                                        .get(&data.session.to_string())
-                                        .unwrap()
-                                    {
-                                        let mut other = WebSocket::from_raw_socket(
-                                            other_stream.stream.try_clone().unwrap(),
-                                            Role::Server,
-                                            None,
-                                        );
-
-                                        match other_stream.stream.peer_addr() {
-                                            Ok(other_addr) => {
-                                                if other_addr != addr {
-                                                    // Now broadcast the received event to all other
-                                                    // editors of the current document
-                                                    let response =
-                                                        serde_json::to_string(&data).unwrap();
-
-                                                    println!(
-                                                        "{}: sending {} bytes to {}",
-                                                        addr,
-                                                        response.len(),
-                                                        other_addr
-                                                    );
-                                                    other.write_message(Message::Text(response))?;
-                                                }
-                                            }
-                                            Err(e) => {
-                                                println!("{:?}", e)
-                                            }
-                                        }
-                                    }
-                                }
-                                _ => (),
-                            }
-                        }
-
-                        // Handle a client closure message
-                        Message::Close(_) => {
-                            let mut db = self.db.lock().unwrap();
-
-                            let user_to_remove = if let Some(c) = db
-                                .get(&out_session_id.to_string())
-                                .unwrap()
-                                .iter()
-                                .find(|&u| u.stream.peer_addr().unwrap() == addr)
-                            {
-                                c.username.to_string()
-                            } else {
-                                "".to_string()
-                            }
-                            .to_string();
-
-                            // Send user remove to all other clients in the session
-                            for other_stream in db.get(&out_session_id.to_string()).unwrap() {
-                                if other_stream.stream.peer_addr().unwrap() == addr {
-                                    continue;
-                                }
-
-                                let mut other = WebSocket::from_raw_socket(
-                                    other_stream.stream.try_clone().unwrap(),
-                                    Role::Server,
-                                    None,
-                                );
-
-                                let response = serde_json::to_string(&Event {
-                                    session: out_session_id.to_string(),
-                                    username: other_stream.username.to_string(),
-                                    event: "remove_user".to_string(),
-                                    data: serde_json::to_string(&UserEvent {
-                                        username: user_to_remove.to_string(),
-                                    })
-                                    .unwrap(),
-                                    ts: SystemTime::now()
-                                        .duration_since(UNIX_EPOCH)
-                                        .unwrap()
-                                        .as_millis(),
-                                })
-                                .unwrap();
-
-                                other.write_message(Message::Text(response))?;
-                            }
-
-                            db.get_mut(&out_session_id.to_string())
-                                .unwrap()
-                                .retain(|other| other.stream.peer_addr().unwrap() != addr);
-
-                            println!("{}: Removed from DB", addr)
-                        }
-                        // Skip all non text nor binary messages
-                        Message::Ping(_) | Message::Pong(_) => {}
-                    }
-                }
-            }
-            // In this scenario we know that it's not a correct
-            // ws connection, hence just avoid it
-            Err(_) => (Ok(())),
+    fn new() -> Self {
+        App {
+            db: Arc::new(Mutex::new(HashMap::new())),
+            peers: PeerMap::new(Mutex::new(HashMap::new())),
+            session: Mutex::new("".to_string()),
+            username: Mutex::new("".to_string()),
         }
     }
 
-    fn clone(app: &App) -> App {
-        App { db: app.db.clone() }
+    fn add_user(&self, addr: SocketAddr, username: String, session: String) -> Vec<User> {
+        match self.db.lock() {
+            Ok(mut data) => match data.entry(session.to_string()) {
+                Entry::Vacant(ele) => {
+                    ele.insert(vec![User {
+                        username: username,
+                        socket: addr,
+                    }]);
+                    vec![]
+                }
+                Entry::Occupied(mut ele) => {
+                    let list = ele.get_mut();
+                    let ret = list.clone();
+                    list.push(User {
+                        username: username,
+                        socket: addr,
+                    });
+                    ret
+                }
+            },
+            Err(mut err) => {
+                let data = err.get_mut();
+                match data.entry(session) {
+                    Entry::Vacant(ele) => {
+                        ele.insert(vec![User {
+                            username: username,
+                            socket: addr,
+                        }]);
+                        vec![]
+                    }
+                    Entry::Occupied(mut ele) => {
+                        let list = ele.get_mut();
+                        let ret = list.clone();
+                        list.push(User {
+                            username: username,
+                            socket: addr,
+                        });
+                        ret
+                    }
+                }
+            }
+        }
     }
 
-    fn new() -> App {
-        App {
-            db: Arc::new(Mutex::new(HashMap::new())),
+    fn get_session(&self) -> String {
+        self.session.lock().unwrap().to_string()
+    }
+
+    fn get_username(&self) -> String {
+        self.username.lock().unwrap().to_string()
+    }
+
+    fn get_others(&self, addr: SocketAddr) -> Vec<User> {
+        let session = self.get_session();
+
+        match self.db.lock() {
+            Ok(data) => {
+                let mut others = data.get(&session).unwrap().clone();
+                others.retain(|other| other.socket != addr);
+                others.clone()
+            }
+            Err(err) => {
+                let data = err.get_ref();
+                let mut others = data.get(&session).unwrap().clone();
+                others.retain(|other| other.socket != addr);
+                others.clone()
+            }
+        }
+    }
+
+    fn login(&self, addr: SocketAddr, cmd: LoginCommand) {
+        let session = cmd.session_id.to_string();
+        let username = cmd.username.to_string();
+
+        // Set the session of the current app instance
+        {
+            let mut self_session = self.session.lock().unwrap();
+            *self_session = session.to_string();
+        }
+
+        // Set the usernale of the current app instance
+        {
+            let mut self_username = self.username.lock().unwrap();
+            *self_username = username.to_string();
+        }
+
+        println!("{}: logged in {:?}", addr, cmd);
+
+        // Add the current user to the session list and
+        // return the list of all other participants of it
+        let others = self.add_user(addr, username.to_string(), session.to_string());
+
+        {
+            let peers = match self.peers.lock() {
+                Ok(p) => p,
+                Err(e) => e.into_inner(),
+            };
+
+            // Create the `add_user` event so that the other
+            // users in the session add this one to their list
+            let cmd_string: String = serde_json::to_string(&Event {
+                event: "add_user".to_string(),
+                username: cmd.username.to_string(),
+                data: serde_json::to_string(&LoginCommand {
+                    username: cmd.username.to_string(),
+                    session_id: session.to_string(),
+                })
+                .unwrap(),
+                ts: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis(),
+            })
+            .unwrap();
+
+            println!("{}: others -> {:?}", addr, others);
+
+            for other in others {
+                peers
+                    .get(&other.socket)
+                    .unwrap()
+                    .unbounded_send(Message::Text(cmd_string.to_string()))
+                    .unwrap_or_default();
+
+                // Now send a message to self with the other user
+                let self_cmd_string: String = serde_json::to_string(&Event {
+                    event: "add_user".to_string(),
+                    username: cmd.username.to_string(),
+                    data: serde_json::to_string(&LoginCommand {
+                        username: other.username.to_string(),
+                        session_id: session.to_string(),
+                    })
+                    .unwrap(),
+                    ts: SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis(),
+                })
+                .unwrap();
+
+                peers
+                    .get(&addr)
+                    .unwrap()
+                    .unbounded_send(Message::Text(self_cmd_string.to_string()))
+                    .unwrap_or_default();
+            }
+        }
+
+        println!("{}: added to {}", addr, session)
+    }
+
+    fn petition_for_value(&self, addr: SocketAddr) {
+        let username = self.get_username();
+
+        let peers = match self.peers.lock() {
+            Ok(p) => p,
+            Err(e) => e.into_inner(),
+        };
+
+        for other in self.get_others(addr) {
+            let cmd_string: String = serde_json::to_string(&Event {
+                event: "send_value".to_string(),
+                username: username.to_string(),
+                data: "".to_string(),
+                ts: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis(),
+            })
+            .unwrap();
+
+            peers
+                .get(&other.socket)
+                .unwrap()
+                .unbounded_send(Message::Text(cmd_string.to_string()))
+                .unwrap_or_default();
+
+            println!("{}: sent value petition to {:?}", addr, other);
+            break;
+        }
+    }
+
+    fn forward_value(&self, addr: SocketAddr, cmd: ValueCommand) {
+        let peers = match self.peers.lock() {
+            Ok(p) => p,
+            Err(e) => e.into_inner(),
+        };
+
+        // Create the `set_value` event
+        let cmd_string: String = serde_json::to_string(&Event {
+            event: "set_value".to_string(),
+            username: self.get_username().to_string(),
+            data: serde_json::to_string(&cmd).unwrap(),
+            ts: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis(),
+        })
+        .unwrap();
+
+        for other in self
+            .get_others(addr)
+            .into_iter()
+            .filter(|a| a.username == cmd.target)
+        {
+            peers
+                .get(&other.socket)
+                .unwrap()
+                .unbounded_send(Message::Text(cmd_string.to_string()))
+                .unwrap_or_default();
+        }
+    }
+
+    fn remove(&self, addr: SocketAddr, session: String) {
+        // Remove the current user from its session
+        let others = match self.db.lock() {
+            Ok(mut data) => {
+                let others = data.get_mut(&session).unwrap();
+                others.retain(|other| other.socket != addr);
+                others.clone()
+            }
+            Err(mut err) => {
+                let data = err.get_mut();
+                let others = data.get_mut(&session).unwrap();
+                others.retain(|other| other.socket != addr);
+                others.clone()
+            }
+        };
+
+        // Get the current username
+        let username = { self.username.lock().unwrap().to_string() };
+
+        // Create the `remove_user` event
+        let cmd_string: String = serde_json::to_string(&Event {
+            event: "remove_user".to_string(),
+            username: username.to_string(),
+            data: serde_json::to_string(&LoginCommand {
+                username: username.to_string(),
+                session_id: session.to_string(),
+            })
+            .unwrap(),
+            ts: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis(),
+        })
+        .unwrap();
+
+        {
+            let peers = match self.peers.lock() {
+                Ok(p) => p,
+                Err(e) => e.into_inner(),
+            };
+
+            for other in others {
+                peers
+                    .get(&other.socket)
+                    .unwrap()
+                    .unbounded_send(Message::Text(cmd_string.to_string()))
+                    .unwrap_or_default();
+            }
+        }
+    }
+
+    fn change(&self, addr: SocketAddr, cmd: ChangeCommand) {
+        let cmd_string: String = serde_json::to_string(&Event {
+            event: "change".to_string(),
+            username: self.username.lock().unwrap().to_string(),
+            data: serde_json::to_string(&cmd).unwrap(),
+            ts: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis(),
+        })
+        .unwrap();
+
+        let peers = match self.peers.lock() {
+            Ok(p) => p,
+            Err(e) => e.into_inner(),
+        };
+
+        let others = self.get_others(addr);
+        let others_len = others.len();
+
+        for other in others {
+            peers
+                .get(&other.socket)
+                .unwrap()
+                .unbounded_send(Message::Text(cmd_string.to_string()))
+                .unwrap_or_default();
+
+            println!(
+                "{}: sent change ({} bytes) to {:?}",
+                addr,
+                cmd_string.len(),
+                other
+            );
+        }
+
+        println!("{}: sent change to {} users", addr, others_len)
+    }
+}
+
+async fn accept_connection(db: Db, peers: PeerMap, stream: TcpStream, addr: SocketAddr) {
+    if let Err(e) = handle_connection(db, peers, stream, addr).await {
+        match e {
+            Error::ConnectionClosed | Error::Protocol(_) | Error::Utf8 => (),
+            err => println!("error: processing connection => {}", err),
         }
     }
 }
 
-fn main() {
-    let port = env::var("PORT").unwrap_or("1337".to_string());
-    let server_addr = format!("0.0.0.0:{}", port);
+async fn handle_connection(
+    db: Db,
+    peers: PeerMap,
+    raw_stream: TcpStream,
+    addr: SocketAddr,
+) -> Result<(), Error> {
+    let app = App {
+        db: db,
+        peers: peers,
+        session: Mutex::new("".to_string()),
+        username: Mutex::new("".to_string()),
+    };
 
-    let server = TcpListener::bind(&server_addr).unwrap();
-    println!(
-        "info: server listening on port {}",
-        server.local_addr().unwrap().port()
+    let ws_stream = accept_async(raw_stream).await.expect(
+        format!(
+            "error: error during the websocket handshake occurred for addr {:?}",
+            addr
+        )
+        .as_ref(),
     );
+
+    println!("{}: WS connection established", addr);
+
+    // Insert the write part of this peer to the peer map.
+    let (tx, rx) = unbounded();
+
+    match app.peers.lock() {
+        Ok(mut data) => data.insert(addr, tx),
+        Err(mut err) => {
+            let data = err.get_mut();
+            data.insert(addr, tx)
+        }
+    };
+
+    let (outgoing, incoming) = ws_stream.split();
+
+    let broadcast_incoming = incoming.try_for_each(|msg| {
+        let data: Event = match serde_json::from_str(&msg.to_string()) {
+            Ok(data) => data,
+            Err(_) => Event {
+                // Empty event
+                event: "".to_string(),
+                username: "".to_string(),
+                data: "".to_string(),
+                ts: 1,
+            },
+        };
+
+        println!(
+            "{}: Received {} event with {} bytes of data",
+            addr,
+            data.event,
+            data.data.len(),
+        );
+
+        match data.event.as_ref() {
+            "login" => {
+                let cmd: LoginCommand = serde_json::from_str(data.data.as_ref()).unwrap();
+                app.login(addr, cmd);
+                app.petition_for_value(addr)
+            }
+            "change" => {
+                let cmd: ChangeCommand = serde_json::from_str(data.data.as_ref()).unwrap();
+                app.change(addr, cmd)
+            }
+            "set_value" => {
+                let cmd: ValueCommand = serde_json::from_str(data.data.as_ref()).unwrap();
+                app.forward_value(addr, cmd)
+            }
+            _ => println!(""),
+        };
+
+        let peers = match app.peers.lock() {
+            Ok(data) => data,
+            Err(err) => err.into_inner(),
+        };
+
+        // We want to broadcast the message to everyone except ourselves.
+        let broadcast_recipients = peers.iter().filter(|(peer_addr, _)| peer_addr != &&addr);
+
+        for (_other_addr, _recp) in broadcast_recipients {
+            // println!("sending {:?} to {:?}", msg, other_addr)
+            // recp.unbounded_send(msg.clone()).unwrap();
+        }
+
+        future::ok(())
+    });
+
+    let receive_from_others = rx.map(Ok).forward(outgoing);
+
+    pin_mut!(broadcast_incoming, receive_from_others);
+    future::select(broadcast_incoming, receive_from_others).await;
+
+    let session = { app.session.lock().unwrap().to_string() };
+
+    // Remove the address from the peers
+    match app.peers.lock() {
+        Ok(mut data) => data.remove(&addr),
+        Err(mut err) => {
+            let data = err.get_mut();
+            data.remove(&addr)
+        }
+    };
+
+    app.remove(addr, session.to_string());
+
+    println!(
+        "{}: disconnected from session {} succesfully",
+        &addr, session
+    );
+
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<(), IoError> {
+    let port = env::var("PORT").unwrap_or("1337".to_string());
+    let addr = format!("0.0.0.0:{}", port).to_string();
+
+    // Create the mother app
     let app = App::new();
 
-    for stream in server.incoming() {
-        let moved_app = App::clone(&app);
+    // Create the event loop and TCP listener we'll accept connections on.
+    let try_socket = TcpListener::bind(&addr).await;
 
-        spawn(move || match stream {
-            Ok(stream) => {
-                if let Err(err) = moved_app.handle_client(&stream) {
-                    match err {
-                        Error::Protocol(e) => println!("error: protocol {:?}", e),
-                        Error::ConnectionClosed | Error::Utf8 => {}
-                        e => println!("error: could not move client {:?}", e),
-                    }
-                }
-            }
-            Err(e) => println!("error: could not accept stream {:?}", e),
-        });
+    let listener = try_socket.expect("Failed to bind");
+    println!("Listening on: {}", addr);
+
+    // Aawn the handling of each connection in a separate task.
+    while let Ok((stream, addr)) = listener.accept().await {
+        tokio::spawn(accept_connection(
+            app.db.clone(),
+            app.peers.clone(),
+            stream,
+            addr,
+        ));
     }
+
+    Ok(())
 }

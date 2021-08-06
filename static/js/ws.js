@@ -30,7 +30,8 @@ document.getElementById("session_id").innerHTML = `Session ID: <b>${session_id}<
 const doc = editor.session.getDocument()
 
 
-const username = random_name();
+const pre_username = random_name();
+const username = window.prompt(`Pick your username `, pre_username);
 document.getElementById("username").innerText = username;
 
 const connect = () => {
@@ -48,7 +49,7 @@ const connect = () => {
             session: session_id,
             event: "login",
             username: username,
-            data: JSON.stringify({ username: username }),
+            data: JSON.stringify({ username: username, session_id: session_id }),
             ts: new Date().getTime()
         }));
 
@@ -66,6 +67,8 @@ const connect = () => {
                 ts: new Date().getTime()
             }));
         });
+
+        editor.on("changeSelectionStyle", (e) => console.log(e));
     };
 
     socket.onclose = (event) => {
