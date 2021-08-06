@@ -6,23 +6,41 @@
         <script src="https://pagecdn.io/lib/ace/1.4.12/mode-plain_text.js" crossorigin="anonymous"  ></script>
         <script src="https://pagecdn.io/lib/ace/1.4.12/keybinding-vim.js" crossorigin="anonymous"  ></script>
         <link rel="stylesheet" href="css/main.css"> 
+        <link rel="stylesheet" href="css/skeleton.css"> 
+        <link rel="stylesheet" href="css/normalize.css"> 
     </head>
     <body>
-        <div id="header">
-            <h3 id="session_id"></h3>
-            <ul id="user_list">
-                <li>(you) <b id="username"></b></li>
-            </ul>
-        </div>
+        <div id="main-content" class="u-full-width">
+            <div id="header">
+                <h4 id="session_id"></h4>
+            </div>
 
-        <div id="editor"></div>
+            <div class="u-full-width">
+                <div class="row">
+                    <div class="ten columns">
+                        <div id="editor">
+                        </div>
+                    </div>
+                    <div class="two columns">
+                        <ul id="user_list">
+                            <li>(you) <b id="username"></b></li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
 
-        <div id="footer">
-            <input type="checkbox" id="vim-mode" name="vim-mode" value=0>
-            <label for="vim-mode"> VIM mode</label>
-            <br><br>
-            <button for="save" onclick="save_contents()">Save to file</button>
-            <button for="clip" onclick="copy_contents()">Copy contents to clipboard</button><br>
+            <div id="footer" class="row">
+                <div class="two columns">
+                    <label for="vim-mode"> 
+                        <input type="checkbox" id="vim-mode" name="vim-mode" value=0>
+                        VIM mode
+                    </label>
+                </div>
+                <div class="eight columns">
+                    <button for="save" onclick="save_contents()">Save to file</button>
+                    <button for="clip" onclick="copy_contents()">Copy contents to clipboard</button><br>
+                </div>
+            </div>
         </div>
 
         <script src="js/random.js" crossorigin="anonymous"  ></script>

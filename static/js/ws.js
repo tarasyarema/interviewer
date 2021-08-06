@@ -19,19 +19,25 @@ const params = Object.fromEntries(urlSearchParams.entries());
 let session_id;
 
 if (params.session_id === undefined) {
-    window.location.replace(`/?session_id=${new Date().getTime()}`);    
+    params.session_id = new Date().getTime();
+    window.location.replace(`/?${new URLSearchParams(params).toString()}`);    
 } else {
     session_id = params.session_id;
 }
 
-document.getElementById("session_id").innerHTML = `Session ID: <b>${session_id}</b>`;
+document.getElementById("session_id").innerHTML = `<b>${session_id}</b>`;
 
 // Get the document object so that we can modify the text
 const doc = editor.session.getDocument()
 
+let username = random_name();
 
-const pre_username = random_name();
-const username = window.prompt(`Pick your username `, pre_username);
+if (params.username === undefined) {
+    username = window.prompt(`Pick your username `, username);
+} else {
+    username = params.username;
+}
+
 document.getElementById("username").innerText = username;
 
 const connect = () => {

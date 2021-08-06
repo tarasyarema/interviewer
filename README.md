@@ -10,14 +10,19 @@ Note: it's deployed to render automatically in every master commit.
 ## Useful information
 
 1. Sessions should be passed as query param: `?session_id={some_id}`.
-2. Once no active connection is left in a session its state is lost forever.
-3. It aims to be fast and simple, but it may happen that the global state differs between clients in some scenarios.
+2. Usernames can be passed as query params (to skip the prompt): `?username={your_username}`
+3. Once no active connection is left in a session its state is lost forever.
+4. It aims to be fast and simple, but it may happen that the global state differs between clients in some scenarios.
     For those cases you should be able to refresh the page and be fine. 
 
 ## Project structure
 
-1. Rust API that handles the websocket connections and sessions in a simple mutex locked `HashMap<String, Vec<Client>>`. See the `src` folder.
-2. Vanilla JS client that uses [ace](https://ace.c9.io/). See the `static` folder.
+1. Rust API that handles the websocket connections and sessions via tokio channel communications. This means that
+    for every new ws connection a new task is spawned and it channels are stored in a global state that stores
+    each socket address (IP) and its channels. Hence the actual communication between users in the server side is
+    done using those channels and not an actual WS communication.
+    For more details, see the `src` folder.
+3. Vanilla JS client that uses [ace](https://ace.c9.io/). See the `static` folder.
 
 ## Run locally
 
@@ -44,8 +49,9 @@ sfz -r -L -C static
 
 ## TODO
 
-- [X] Add current user list of the session to FE.
-- [ ] Handle the ws url in a better way, xd
-- [ ] Testing, stress-testing and benchmarking.
-- [ ] Refactor Rust code to methods fo `App` as it's hard to read right now.
-- [ ] Adding some sort of state (?).
+- [X] (**feature**) Add current user list of the session to FE.
+- [X] (**refactor**) Refactor Rust code to methods fo `App` as it's hard to read right now.
+- [ ] (**bug**) Sometimes it keeps sending the `set_value` event
+- [ ] (**feature**) Handle the ws url in a better way, xd
+- [ ] (**testing**) Testing, stress-testing and benchmarking.
+- [ ] (**feature**) Adding some sort of state (?).

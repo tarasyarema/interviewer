@@ -1,9 +1,18 @@
+html {
+    background: #FBFAF9;
+}
+
 #header, #footer {
     margin: 10px;
 }
 
+#main-content {
+    margin: 10px;
+}
+
 #editor {
+    border: 5px solid #ECE9E2;
     position: relative;
     width: 100%;
-    height: 800px;
+    height: 600px;
 }
