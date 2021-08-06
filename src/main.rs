@@ -467,7 +467,7 @@ async fn handle_connection(
                 let cmd: ValueCommand = serde_json::from_str(data.data.as_ref()).unwrap();
                 app.forward_value(addr, cmd)
             }
-            _ => println!(""),
+            _ => (),
         };
 
         let peers = match app.peers.lock() {
