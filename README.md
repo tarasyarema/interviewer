@@ -51,6 +51,7 @@ sfz -r -L -C static
 - [X] (**feature**) Add current user list of the session to FE
 - [X] (**refactor**) Refactor Rust code to methods fo `App` as it's hard to read right now
 - [X] (**bug**) Sometimes it keeps sending the `set_value` event
+- [ ] (**security**) Limit the user input that is tored without checks: usernames and session ids (those are store in raw rust `String`s)
 - [ ] (**feature**) Make the design better (I suck at it xd :/)
 - [ ] (**feature**) Handle the ws url in a better way, xd
 - [ ] (**testing**) Testing, stress-testing and benchmarking
