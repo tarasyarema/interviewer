@@ -3,41 +3,38 @@
     <head>
         <title>Interviewer</title>
         <script src="https://pagecdn.io/lib/ace/1.4.12/ace.min.js" crossorigin="anonymous" integrity="sha256-T5QdmsCQO5z8tBAXMrCZ4f3RX8wVdiA0Fu17FGnU1vU=" ></script>
+
+        <!-- Language mode -->
         <script src="https://pagecdn.io/lib/ace/1.4.12/mode-plain_text.js" crossorigin="anonymous"  ></script>
+
+        <!-- VIM key bindings -->
         <script src="https://pagecdn.io/lib/ace/1.4.12/keybinding-vim.js" crossorigin="anonymous"  ></script>
+
+        <!-- Themes -->
+        <script src="https://pagecdn.io/lib/ace/1.4.12/theme-gruvbox.min.js" crossorigin="anonymous"  ></script>
+        <script src="https://pagecdn.io/lib/ace/1.4.12/theme-solarized_light.min.js" crossorigin="anonymous"  ></script>
+
+        <!-- Custom CSS -->
         <link rel="stylesheet" href="css/main.css"> 
         <link rel="stylesheet" href="css/skeleton.css"> 
         <link rel="stylesheet" href="css/normalize.css"> 
     </head>
     <body>
         <div id="main-content" class="u-full-width">
-            <div id="header">
-                <h4 id="session_id"></h4>
-            </div>
-
-            <div class="u-full-width">
-                <div class="row">
-                    <div class="ten columns">
-                        <div id="editor"></div>
-                    </div>
-                    <div class="two columns">
-                        <ul id="user_list">
-                            <li>(you) <b id="username"></b></li>
-                        </ul>
-                    </div>
+            <div class="row">
+                <div class="eight columns">
+                    <div id="editor"></div>
                 </div>
-            </div>
-
-            <div id="footer" class="row">
-                <div class="two columns">
-                    <label for="vim-mode"> 
+                <div class="four columns container">
+                    <h5 id="session_id"></h5>
+                    Hi, <b id="username"></b>!
+                    <ul id="user_list"></ul>
+                    <label class="action-item" for="vim-mode"> 
                         <input type="checkbox" id="vim-mode" name="vim-mode" value=0>
                         VIM mode
                     </label>
-                </div>
-                <div class="eight columns">
-                    <button for="save" onclick="save_contents()">Save to file</button>
-                    <button for="clip" onclick="copy_contents()">Copy contents to clipboard</button><br>
+                    <button class="action-item" for="save" onclick="save_contents()">Save to file</button>
+                    <button class="action-item" for="clip" onclick="copy_contents()">Copy to clipboard</button>
                 </div>
             </div>
         </div>

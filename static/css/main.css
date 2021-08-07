@@ -1,18 +1,20 @@
 html {
-    background: #FBFAF9;
-}
-
-#header, #footer {
-    margin: 10px;
+    background: #fbfafa;
 }
 
 #main-content {
-    margin: 10px;
+    margin: 20px;
+}
+
+.action-item {
+    position: relative;
+    margin: 5px;
+    max-width: 200px;
 }
 
 #editor {
-    border: 5px solid #ECE9E2;
     position: relative;
+    border: 2px solid #ECE9E2;
     width: 100%;
-    height: 600px;
+    height: 90vh;
 }

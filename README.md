@@ -1,6 +1,5 @@
 # interviewer
 
-
 > In-memory, non stateful and session based code sharing application.
 
 Test it here: [interviewer.taras.lol](https://interviewer.taras.lol/)
@@ -49,9 +48,15 @@ sfz -r -L -C static
 
 ## TODO
 
-- [X] (**feature**) Add current user list of the session to FE.
-- [X] (**refactor**) Refactor Rust code to methods fo `App` as it's hard to read right now.
-- [ ] (**bug**) Sometimes it keeps sending the `set_value` event
+- [X] (**feature**) Add current user list of the session to FE
+- [X] (**refactor**) Refactor Rust code to methods fo `App` as it's hard to read right now
+- [X] (**bug**) Sometimes it keeps sending the `set_value` event
+- [ ] (**feature**) Make the design better (I suck at it xd :/)
 - [ ] (**feature**) Handle the ws url in a better way, xd
-- [ ] (**testing**) Testing, stress-testing and benchmarking.
-- [ ] (**feature**) Adding some sort of state (?).
+- [ ] (**testing**) Testing, stress-testing and benchmarking
+- [ ] (**feature**) Adding some sort of state (?)
+- [ ] (**feature**) Add theme and language change
+
+## License
+
+**GNU General Public License v3.0**
