@@ -11,11 +11,15 @@ use std::{
 };
 
 use futures_channel::mpsc::{unbounded, UnboundedSender};
-use futures_util::{future, pin_mut, stream::TryStreamExt, StreamExt};
+use futures_util::{future, pin_mut, StreamExt};
 
+use futures_util::TryStreamExt;
 use tokio::net::{TcpListener, TcpStream};
-use tokio_tungstenite::{accept_async, tungstenite::Error};
-use tungstenite::protocol::Message;
+use tokio_tungstenite::{accept_hdr_async_with_config, tungstenite::Error};
+use tungstenite::handshake::server::{Request, Response};
+use tungstenite::protocol::{Message, WebSocketConfig};
+
+const MAX_STRING_LEN: usize = 24;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct User {
@@ -60,6 +64,11 @@ struct ChangeCommand {
 struct ValueCommand {
     target: String,
     text: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct ErrorCommand {
+    msg: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -160,12 +169,45 @@ impl App {
         let session = cmd.session_id.to_string();
         let username = cmd.username.to_string();
 
+        // Validation error on username and session strings
+        if session.len() == 0
+            || session.len() > MAX_STRING_LEN
+            || username.len() > MAX_STRING_LEN
+            || username.len() == 0
+        {
+            println!("{}: Got validation error", addr);
+
+            let cmd_error: String = serde_json::to_string(&Event {
+                event: "error".to_string(),
+                username: cmd.username.to_string(),
+                data: serde_json::to_string(&ErrorCommand {
+                    msg: "Values received exceed max length or empty".to_string(),
+                })
+                .unwrap(),
+                ts: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis(),
+            })
+            .unwrap();
+
+            match self.peers.lock() {
+                Ok(p) => p,
+                Err(e) => e.into_inner(),
+            }
+            .get(&addr)
+            .unwrap()
+            .unbounded_send(Message::Text(cmd_error.to_string()))
+            .unwrap_or_default();
+
+            return;
+        }
+
         // Set the session of the current app instance
         {
             let mut self_session = self.session.lock().unwrap();
             *self_session = session.to_string();
         }
-
         // Set the usernale of the current app instance
         {
             let mut self_username = self.username.lock().unwrap();
@@ -234,7 +276,10 @@ impl App {
             }
         }
 
-        println!("{}: added to {}", addr, session)
+        println!("{}: added to {}", addr, session);
+
+        // Now trigger the petition for value
+        self.petition_for_value(addr)
     }
 
     fn petition_for_value(&self, addr: SocketAddr) {
@@ -411,7 +456,31 @@ async fn handle_connection(
         username: Mutex::new("".to_string()),
     };
 
-    let ws_stream = accept_async(raw_stream).await.expect(
+    let callback = |_req: &Request, mut response: Response| {
+        let headers = response.headers_mut();
+
+        // Add the `interviewer` protocol to the headers
+        headers.append("Sec-WebSocket-Protocol", "interviewer".parse().unwrap());
+
+        Ok(response)
+    };
+
+    let ws_stream = accept_hdr_async_with_config(
+        raw_stream,
+        callback,
+        Some(WebSocketConfig {
+            max_send_queue: None,
+            max_message_size: None,
+            max_frame_size: None,
+            // This setting allows to accept client frames which are not masked
+            // This is not in compliance with RFC 6455 but might be handy in some
+            // rare cases where it is necessary to integrate with existing/legacy
+            // clients which are sending unmasked frames
+            accept_unmasked_frames: true,
+        }),
+    )
+    .await
+    .expect(
         format!(
             "error: error during the websocket handshake occurred for addr {:?}",
             addr
@@ -457,7 +526,6 @@ async fn handle_connection(
             "login" => {
                 let cmd: LoginCommand = serde_json::from_str(data.data.as_ref()).unwrap();
                 app.login(addr, cmd);
-                app.petition_for_value(addr)
             }
             "change" => {
                 let cmd: ChangeCommand = serde_json::from_str(data.data.as_ref()).unwrap();
@@ -470,19 +538,6 @@ async fn handle_connection(
             _ => (),
         };
 
-        let peers = match app.peers.lock() {
-            Ok(data) => data,
-            Err(err) => err.into_inner(),
-        };
-
-        // We want to broadcast the message to everyone except ourselves.
-        let broadcast_recipients = peers.iter().filter(|(peer_addr, _)| peer_addr != &&addr);
-
-        for (_other_addr, _recp) in broadcast_recipients {
-            // println!("sending {:?} to {:?}", msg, other_addr)
-            // recp.unbounded_send(msg.clone()).unwrap();
-        }
-
         future::ok(())
     });
 
@@ -490,8 +545,6 @@ async fn handle_connection(
 
     pin_mut!(broadcast_incoming, receive_from_others);
     future::select(broadcast_incoming, receive_from_others).await;
-
-    let session = { app.session.lock().unwrap().to_string() };
 
     // Remove the address from the peers
     match app.peers.lock() {
@@ -501,6 +554,14 @@ async fn handle_connection(
             data.remove(&addr)
         }
     };
+
+    let session = app.get_session();
+
+    // If the session is empty it means that the user
+    // had an error on login
+    if session == "" {
+        return Ok(());
+    }
 
     app.remove(addr, session.to_string());
 

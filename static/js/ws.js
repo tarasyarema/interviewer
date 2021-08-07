@@ -102,10 +102,11 @@ const connect = () => {
     document.getElementById("user_list").innerHTML = "";
 
     // Init the socker
-    const socket = new WebSocket(URL);
+    const socket = new WebSocket(URL, ['interviewer']);
 
     // TODO: This seems like a really bad idea, but works
     let external_change = false;
+    let is_error = false;
 
     socket.onopen = (open_event) => {
         console.log("[open] Connection established", open_event);
@@ -136,7 +137,7 @@ const connect = () => {
     };
 
     socket.onclose = (event) => {
-        if (event.wasClean) {
+        if (event.wasClean || is_error) {
             console.log(`[close] Connection closed cleanly { code: ${event.code}, reason: ${event.reason} }`);
         } else {
             console.log('[close] Connection died, reconnecting...', event);
@@ -239,6 +240,16 @@ const connect = () => {
                 console.log(`[${event}] sent ${value.length} bytes to ${event_data.username}`, value);
 
                 break;
+            case "error":
+                const reason = JSON.parse(data).msg;
+
+                // Set the error message in the FE and mark the satte as errored
+                document.getElementById("error-msg").innerHTML = `Error: <b>${reason}</b>`;
+                is_error = true;
+
+                // Finally close the socket to prompt the user for
+                // a new fresh connection
+                socket.close();
         }
     };
 }

@@ -2,6 +2,10 @@ html {
     background: #fbfafa;
 }
 
+#error-msg {
+    color: red;
+}
+
 #main-content {
     margin: 20px;
 }
